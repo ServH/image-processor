@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState } from 'react';
-import Image from 'next/image';
 import { ImageDropzone } from '@/components/forms/ImageDropzone';
 import { ResizeForm } from '@/components/forms/ResizeForm';
 import { RescaleForm } from '@/components/forms/RescaleForm';
+import { ImageComparison } from '@/components/ImageComparasion';
 import { 
   Card, 
   CardHeader, 
@@ -20,14 +20,17 @@ type OperationType = 'resize' | 'rescale';
 
 interface ProcessedImage {
   url: string;
+  originalUrl: string;
   originalSize: number;
   processedSize: number;
   dimensions: [number, number];
+  processingTime?: number;
   operation: OperationType;
   operationDetails: Record<string, any>;
 }
 
-export function ImageProcessor() {
+// Exportación por defecto en lugar de exportación nombrada
+export default function ImageProcessor() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [activeOperation, setActiveOperation] = useState<OperationType>('resize');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -58,6 +61,9 @@ export function ImageProcessor() {
     setError(null);
 
     try {
+      // Create temporary URL for the original image
+      const originalUrl = URL.createObjectURL(selectedFile);
+
       // Create form data for API request
       const formData = new FormData();
       formData.append('file', selectedFile);
@@ -75,6 +81,7 @@ export function ImageProcessor() {
       }
 
       // Send request to API
+      console.log('Enviando solicitud a la API...');
       const response = await fetch('/api/image', {
         method: 'POST',
         body: formData,
@@ -82,17 +89,25 @@ export function ImageProcessor() {
 
       if (!response.ok) {
         const errorData = await response.json();
+        console.error('Error de API:', errorData);
         throw new Error(errorData.message || 'Error al procesar la imagen');
       }
 
       const result = await response.json();
+      console.log('Respuesta de la API:', result);
+
+      if (!result.success) {
+        throw new Error(result.message || 'Error al procesar la imagen');
+      }
 
       // Set processed image data
       setProcessedImage({
         url: result.url,
+        originalUrl: originalUrl,
         originalSize: result.originalSize,
         processedSize: result.processedSize,
         dimensions: result.dimensions,
+        processingTime: result.processingTime,
         operation: operationData.operation,
         operationDetails: operationData.operation === 'resize' 
           ? { 
@@ -105,6 +120,7 @@ export function ImageProcessor() {
             }
       });
     } catch (err) {
+      console.error('Error al procesar imagen:', err);
       setError(err instanceof Error ? err.message : 'Error desconocido al procesar la imagen');
     } finally {
       setIsProcessing(false);
@@ -121,16 +137,13 @@ export function ImageProcessor() {
     processImage(data);
   };
 
-  // Download processed image
-  const handleDownload = () => {
-    if (processedImage) {
-      const link = document.createElement('a');
-      link.href = processedImage.url;
-      link.download = `processed-${selectedFile?.name || 'image'}`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+  // Reset the current operation
+  const handleReset = () => {
+    if (processedImage && processedImage.originalUrl) {
+      URL.revokeObjectURL(processedImage.originalUrl);
     }
+    setProcessedImage(null);
+    setError(null);
   };
 
   return (
@@ -209,56 +222,29 @@ export function ImageProcessor() {
 
       {/* Results Section */}
       {processedImage && (
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>Resultado</CardTitle>
-            <CardDescription>
-              {processedImage.operation === 'resize' 
-                ? `Imagen redimensionada a ${processedImage.dimensions[0]}×${processedImage.dimensions[1]}px`
-                : `Imagen reescalada por un factor de ${(processedImage.operationDetails.scaleFactor as number).toFixed(1)}`}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="aspect-w-16 aspect-h-9 relative rounded-lg overflow-hidden border border-gray-200">
-                <Image
-                  src={processedImage.url}
-                  alt="Imagen procesada"
-                  className="object-contain"
-                  fill
-                  sizes="(max-width: 640px) 100vw, 640px"
-                />
-              </div>
-              <div className="flex flex-col justify-center space-y-4">
-                <div className="grid grid-cols-2 gap-2 text-sm">
-                  <div className="text-gray-500">Dimensiones:</div>
-                  <div>{processedImage.dimensions[0]} × {processedImage.dimensions[1]} px</div>
-                  
-                  <div className="text-gray-500">Tamaño original:</div>
-                  <div>{(processedImage.originalSize / 1024).toFixed(2)} KB</div>
-                  
-                  <div className="text-gray-500">Tamaño procesado:</div>
-                  <div>{(processedImage.processedSize / 1024).toFixed(2)} KB</div>
-                  
-                  <div className="text-gray-500">Reducción:</div>
-                  <div>
-                    {processedImage.processedSize < processedImage.originalSize 
-                      ? `${(100 - (processedImage.processedSize / processedImage.originalSize * 100)).toFixed(2)}%`
-                      : 'N/A'}
-                  </div>
-                </div>
-                
-                <Button 
-                  onClick={handleDownload}
-                  variant="secondary"
-                  className="mt-4"
-                >
-                  Descargar Imagen
-                </Button>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        <div className="mt-6">
+          <ImageComparison
+            originalUrl={processedImage.originalUrl}
+            processedUrl={processedImage.url}
+            originalSize={processedImage.originalSize}
+            processedSize={processedImage.processedSize}
+            dimensions={processedImage.dimensions}
+            processingTime={processedImage.processingTime}
+            operation={processedImage.operation}
+            operationDetails={processedImage.operationDetails}
+          />
+          
+          <div className="mt-4 flex justify-end">
+            <Button 
+              type="button"
+              variant="outline"
+              onClick={handleReset}
+              className="ml-auto"
+            >
+              Procesar otra imagen
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );

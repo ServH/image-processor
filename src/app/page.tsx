@@ -1,5 +1,5 @@
 import React from 'react';
-import { ImageProcessor } from '@/components/ImageProcessor';
+import ImageProcessor from '@/components/ImageProcessor';
 
 export default function Home() {
   return (
