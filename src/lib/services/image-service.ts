@@ -4,7 +4,6 @@ import fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { promisify } from 'util';
-import { FileUtils } from '@/lib/utils/file-utils';
 
 const execPromise = promisify(exec);
 
@@ -54,6 +53,8 @@ export interface ProcessResult {
   processedSize?: number;
   dimensions?: [number, number];
   scaleFactor?: number;
+  format?: string;
+  processingTime?: number;
 }
 
 /**
@@ -67,11 +68,12 @@ export interface ProcessFileParams {
 
 /**
  * Servicio para el procesamiento de imágenes
- * Esta implementación preparatoria será completada en la Fase 3
+ * Utiliza un script Python con Pillow para el procesamiento de alta calidad
  */
 export class ImageService {
   private static readonly TEMP_DIR = path.join(process.cwd(), 'public', 'temp');
   private static readonly PYTHON_SCRIPT = path.join(process.cwd(), 'src', 'python', 'image_processor.py');
+  private static readonly MAX_FILE_AGE_MS = 60 * 60 * 1000; // 1 hora
 
   /**
    * Constructor que inicializa el servicio
@@ -80,6 +82,11 @@ export class ImageService {
   constructor() {
     this.ensureTempDirectory();
     this.validatePythonScript();
+    
+    // Limpieza automática de archivos temporales viejos
+    setTimeout(() => {
+      this.cleanupTempFiles();
+    }, 1000);
   }
 
   /**
@@ -118,6 +125,14 @@ export class ImageService {
       // Generar URL pública
       const publicUrl = `/temp/${processedFilename}`;
       
+      // Si hubo un error, devolver la URL original
+      if (!result.success) {
+        return {
+          ...result,
+          url: `/temp/${originalFilename}`
+        };
+      }
+      
       return {
         ...result,
         url: publicUrl
@@ -133,56 +148,73 @@ export class ImageService {
   }
 
   /**
-   * Procesa una imagen
-   * Esta implementación será completada en la Fase 3
+   * Procesa una imagen utilizando el script Python
    * 
    * @param params - Parámetros para el procesamiento
    * @returns Resultado del procesamiento
    */
   public async processImage(params: ProcessImageParams): Promise<ProcessResult> {
-    // Este método será implementado en la Fase 3
-    // Por ahora, devolvemos una simulación del resultado
-    
     try {
       // Verificar que exista el archivo de entrada
       if (!existsSync(params.inputPath)) {
         throw new Error(`El archivo de entrada no existe: ${params.inputPath}`);
       }
       
-      // Obtener tamaño del archivo original
-      const originalStats = await fs.stat(params.inputPath);
-      const originalSize = originalStats.size;
+      // Verificar que exista el script Python
+      await this.validatePythonScript();
       
-      // Simular procesamiento (copiar archivo)
-      // En la Fase 3, llamaremos al script Python
-      await fs.copyFile(params.inputPath, params.outputPath);
+      // Preparar comando y argumentos para el script Python
+      const args = {
+        operation: params.operation,
+        input_path: params.inputPath,
+        output_path: params.outputPath,
+        ...(params.operation === 'resize' ? {
+          width: (params.options as ResizeOptions).width,
+          height: (params.options as ResizeOptions).height,
+          keep_aspect_ratio: (params.options as ResizeOptions).keepAspectRatio
+        } : {
+          scale_factor: (params.options as RescaleOptions).scaleFactor
+        })
+      };
       
-      // Obtener tamaño del archivo procesado
-      const processedStats = await fs.stat(params.outputPath);
-      const processedSize = processedStats.size;
+      // Ejecutar script Python
+      const pythonExecutable = this.getPythonExecutable();
+      const command = `${pythonExecutable} "${ImageService.PYTHON_SCRIPT}" '${JSON.stringify(args)}'`;
       
-      // Simular dimensiones según operación
-      let dimensions: [number, number] = [800, 600]; // Valores por defecto
+      const { stdout, stderr } = await execPromise(command);
       
-      if (params.operation === 'resize') {
-        const options = params.options as ResizeOptions;
-        dimensions = [options.width, options.height];
-      } else if (params.operation === 'rescale') {
-        // Simular dimensiones para reescalado
-        const options = params.options as RescaleOptions;
-        dimensions = [
-          Math.round(800 * options.scaleFactor),
-          Math.round(600 * options.scaleFactor)
-        ];
+      if (stderr) {
+        console.warn('Python warning/error:', stderr);
+      }
+      
+      // Parsear resultado
+      const result = JSON.parse(stdout);
+      
+      // Si hubo un error en el script
+      if (!result.success) {
+        return {
+          success: false,
+          error: result.error || 'Error desconocido en el procesamiento'
+        };
+      }
+      
+      // Verificar que se creó el archivo de salida
+      if (!existsSync(params.outputPath)) {
+        return {
+          success: false,
+          error: 'El archivo de salida no fue creado'
+        };
       }
       
       return {
         success: true,
-        originalSize,
-        processedSize,
-        dimensions,
+        originalSize: result.original_size,
+        processedSize: result.processed_size,
+        dimensions: result.dimensions,
+        format: result.format,
+        processingTime: result.processing_time,
         ...(params.operation === 'rescale' && { 
-          scaleFactor: (params.options as RescaleOptions).scaleFactor
+          scaleFactor: result.scale_factor
         })
       };
     } catch (error) {
@@ -192,6 +224,16 @@ export class ImageService {
         error: error instanceof Error ? error.message : 'Error desconocido'
       };
     }
+  }
+
+  /**
+   * Determina el ejecutable de Python a utilizar
+   * Primero intenta con 'python3', luego con 'python'
+   */
+  private getPythonExecutable(): string {
+    // En un entorno real, esto debería verificar si los comandos existen
+    // Para simplificar, asumimos que al menos uno está disponible
+    return process.platform === 'win32' ? 'python' : 'python3';
   }
 
   /**
@@ -206,21 +248,23 @@ export class ImageService {
   /**
    * Valida que existe el script Python
    */
-  private validatePythonScript(): void {
+  private async validatePythonScript(): Promise<void> {
     if (!existsSync(ImageService.PYTHON_SCRIPT)) {
-      console.warn(`Advertencia: El script Python no existe en la ruta: ${ImageService.PYTHON_SCRIPT}`);
+      throw new Error(`El script Python no existe en la ruta: ${ImageService.PYTHON_SCRIPT}`);
     }
   }
 
   /**
    * Limpia archivos temporales antiguos
    * 
-   * @param maxAgeMs - Edad máxima de los archivos en milisegundos (por defecto 1 hora)
+   * @param maxAgeMs - Edad máxima de los archivos en milisegundos
    */
-  public async cleanupTempFiles(maxAgeMs: number = 60 * 60 * 1000): Promise<void> {
+  public async cleanupTempFiles(maxAgeMs: number = ImageService.MAX_FILE_AGE_MS): Promise<void> {
     try {
       const now = Date.now();
       const files = await fs.readdir(ImageService.TEMP_DIR);
+      
+      let cleanedCount = 0;
       
       for (const file of files) {
         // Ignorar archivo .gitkeep
@@ -232,7 +276,12 @@ export class ImageService {
         // Eliminar archivos más antiguos que maxAgeMs
         if (now - stats.mtimeMs > maxAgeMs) {
           await fs.unlink(filePath);
+          cleanedCount++;
         }
+      }
+      
+      if (cleanedCount > 0) {
+        console.log(`Limpieza completada: ${cleanedCount} archivos eliminados`);
       }
     } catch (error) {
       console.error('Error cleaning up temp files:', error);

@@ -122,7 +122,8 @@ export function ImageDropzone({
         </div>
       ) : (
         <div className="relative rounded-lg overflow-hidden border border-gray-200">
-          <div className="aspect-w-16 aspect-h-9 w-full relative">
+          {/* Corregimos el problema de altura estableciendo dimensiones fijas */}
+          <div className="relative w-full" style={{ height: '240px' }}>
             <Image
               src={selectedFile.preview}
               alt="Vista previa"
